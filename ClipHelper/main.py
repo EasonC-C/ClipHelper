@@ -654,13 +654,10 @@ def _profile_dir():
 
 
 def _log(msg):
-    """调试日志：追加写入 %LOCALAPPDATA%\\ClipHelper\\browser_open.log。
-    ClipHelper 目录不存在时自动创建；用于定位浏览器启动相关问题
-    （黑窗口/启动失败等）；写入失败静默。"""
+    """调试日志：追加写入程序所在目录（exe 同目录）browser_open.log。
+    用于定位浏览器启动相关问题（黑窗口/启动失败等）；写入失败静默。"""
     try:
-        base = os.environ.get("LOCALAPPDATA") or _base_dir()
-        d = os.path.join(base, "ClipHelper")
-        os.makedirs(d, exist_ok=True)
+        d = _base_dir()
         path = os.path.join(d, "browser_open.log")
         with open(path, "a", encoding="utf-8") as f:
             f.write("%s  %s\n" % (time.strftime("%m-%d %H:%M:%S"), msg))
