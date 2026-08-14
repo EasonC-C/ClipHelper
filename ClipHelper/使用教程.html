@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>ClipHelper 使用教程</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:#F6F5F3;color:#1A1A2E;line-height:1.7;
+    padding:40px 16px 60px;
+  }
+  .wrap{max-width:640px;margin:0 auto}
+  h1{font-size:24px;text-align:center;margin-bottom:6px}
+  .sub{text-align:center;color:#8B8982;font-size:13px;margin-bottom:32px}
+  .step{
+    background:#fff;border:1px solid #E4E2DC;border-radius:12px;
+    padding:20px 22px;margin-bottom:18px;
+    box-shadow:0 1px 3px rgba(0,0,0,.04);
+  }
+  .step-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .num{
+    width:28px;height:28px;border-radius:50%;flex-shrink:0;
+    background:#4F46E5;color:#fff;font-weight:700;font-size:14px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .step-head h2{font-size:17px}
+  .step ol{padding-left:22px}
+  .step li{margin-bottom:10px;font-size:14px}
+  .step li:last-child{margin-bottom:0}
+  code{
+    background:#4F46E5;color:#fff;border-radius:4px;
+    padding:1px 8px;font-size:13px;font-family:"Consolas",monospace;
+  }
+  .red{
+    display:inline-block;width:10px;height:10px;border-radius:50%;
+    background:#f5222d;vertical-align:middle;margin:0 2px;
+    box-shadow:0 0 4px rgba(245,34,45,.6);
+  }
+  .tip{
+    background:#EEF2FF;border:1px solid #E0E7FF;border-radius:8px;
+    padding:10px 14px;font-size:13px;color:#4338CA;margin-top:12px;
+  }
+  .tip.warn{background:#FFFBEB;border-color:#FDE68A;color:#92400E}
+  .footer{text-align:center;color:#B8B5AE;font-size:12px;margin-top:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ClipHelper 使用教程</h1>
+  <p class="sub">三步搞定：先开程序，再装插件，就能用</p>
+
+  <div class="step">
+    <div class="step-head">
+      <span class="num">1</span>
+      <h2>打开程序，弹出扩展页</h2>
+    </div>
+    <ol>
+      <li>双击运行 <b>ClipHelper.exe</b>（程序会自动预热专用浏览器）</li>
+      <li>点击程序右上角的 <b>⚙</b> 按钮（齿轮图标）</li>
+      <li>专用浏览器窗口会打开「扩展程序」管理页</li>
+    </ol>
+  </div>
+
+  <div class="step">
+    <div class="step-head">
+      <span class="num">2</span>
+      <h2>安装插件</h2>
+    </div>
+    <ol>
+      <li>打开「开发者模式」开关</li>
+      <li>点击「加载已解压的扩展程序」</li>
+      <li>选择 <b>extension 文件夹</b>（里面含 manifest.json 的那个）</li>
+      <li>列表出现「ClipHelper」且开关为蓝色，即安装成功</li>
+    </ol>
+    <div class="tip">验证：打开任意抖音商品页面，右下角出现 <span class="red"></span> 小红点即正常。</div>
+  </div>
+
+  <div class="step">
+    <div class="step-head">
+      <span class="num">3</span>
+      <h2>开始使用</h2>
+    </div>
+    <ol>
+      <li>回到 ClipHelper 程序（保持运行，别关掉专用浏览器）</li>
+      <li>复制抖音商品分享文字</li>
+      <li>在目标系统里按 <b>Ctrl+V</b> 依次粘贴：链接 → 标题 → 店名</li>
+    </ol>
+    <div class="tip warn">提示：
+      顶部标题栏可拖动窗口，右上角按钮：⚙ 打开扩展页、📌 置顶窗口、─ 最小化、✕ 关闭；
+      状态栏右侧的开关可随时「暂停 / 启用」，暂停后不再拦截 Ctrl+V，无需关闭程序。
+    </div>
+  </div>
+
+  <p class="footer">ClipHelper</p>
+</div>
+</body>
+</html>

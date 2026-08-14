@@ -1,0 +1,18 @@
+# Python 缓存与虚拟环境
+__pycache__/
+*.pyc
+ClipHelper/venv/
+
+# PyInstaller 构建产物
+ClipHelper/build/
+ClipHelper/dist/
+ClipHelper/work/
+
+# 本地浏览器测试 profile（含缓存与用户数据）
+_tmp_profile/
+
+# IDE 本地配置
+.trae/
+
+# 备份文件
+*.bak
