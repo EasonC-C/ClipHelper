@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ClipHelper",
-  "version": "1.0.0",
-  "description": "从抖音商品落地页提取店铺名",
+  "version": "1.2.0",
+  "description": "从抖音商品落地页提取店铺名并回传 ClipHelper",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",

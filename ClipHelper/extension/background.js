@@ -31,3 +31,34 @@ function trimTabs() {
 
 chrome.tabs.onCreated.addListener(trimTabs);
 chrome.runtime.onStartup.addListener(trimTabs);
+
+// ── 店名代发 ─────────────────────────────────────────────
+// content script 在页面上下文 fetch 127.0.0.1 会被 Chrome Private Network Access
+// 预检拦截；扩展后台持有 host_permissions(["http://127.0.0.1/*"])，可正常请求，
+// 故由这里代发店名到本机 ClipHelper 的 HTTP 服务。
+
+async function postShop(shop, url) {
+  const payload = JSON.stringify({ shop: shop, url: url || "" });
+  const ports = Array.from({ length: 10 }, (_, i) => 8765 + i);
+  for (const port of ports) {
+    try {
+      const r = await fetch("http://127.0.0.1:" + port + "/api/shop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      if (r.ok) return { ok: true, port };
+    } catch (_) {
+      /* try next port */
+    }
+  }
+  return { ok: false };
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || msg.type !== "shop" || !msg.shop) {
+    return;
+  }
+  postShop(String(msg.shop), msg.url || "").then(sendResponse);
+  return true; // 异步 sendResponse
+});

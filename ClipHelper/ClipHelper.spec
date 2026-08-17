@@ -10,7 +10,7 @@ a = Analysis(
     # uiautomation 运行时会从自带 bin/ 目录按名字加载 UIAutomationClient DLL，
     # 必须连同该目录一起打包，否则冻结后 UIA 枚举菜单静默失败（右键粘贴不判定）
     datas=collect_data_files('uiautomation', includes=['bin/*']),
-    hiddenimports=['uiautomation', 'comtypes'],
+    hiddenimports=['uiautomation', 'comtypes', 'psutil'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

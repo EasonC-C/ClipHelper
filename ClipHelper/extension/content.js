@@ -1,6 +1,6 @@
-// ClipHelper · 店名提取 v1.1.0
-// 在抖音商品落地页提取店铺名，POST 回传给本机 ClipHelper 程序
-// （v1.1.0 起移除页签切回轮询：商品链接由 ClipHelper 独立 Chrome 实例打开，不再需要）
+// ClipHelper · 店名提取 v1.2.0
+// 在抖音商品落地页提取店铺名，经 background 回传到本机 ClipHelper
+// （v1.2.0：不再在页面里直接 fetch 127.0.0.1，避免 Chrome Private Network Access 预检拦截）
 // 右下角红点=已注入；顶部横幅=提取/发送状态（肉眼可见，不依赖控制台）
 (() => {
   const HREF = location.href;
@@ -96,26 +96,31 @@
     return findShop(document.body ? document.body.innerText : "");
   }
 
-  // 回传本地程序：遍历端口 8765..8774，直到有响应
+  // 经 background 代发回本地程序（background 带 host_permissions，不受 PNA 预检限制）
   function send(shop, source) {
     if (!/(douyin|jinritemai)/i.test(HREF)) return;  // 只在抖音系页面回传
-    const payload = JSON.stringify({ shop: shop, url: HREF });
-    const ports = Array.from({ length: 10 }, (_, i) => 8765 + i);
-    let i = 0;
-    const tryPort = () => {
-      if (i >= ports.length) {
-        banner("店名发送失败：ClipHelper 未运行？", "#f5222d");
-        return;
-      }
-      const port = ports[i++];
-      fetch("http://127.0.0.1:" + port + "/api/shop", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: payload
-      }).then(r => {
-        if (r.ok) banner("已发送店名「" + shop + "」(" + source + "·端口" + port + ")", "#059669");
-        else tryPort();
-      }).catch(() => tryPort());
-    };
-    tryPort();
+    try {
+      chrome.runtime.sendMessage(
+        { type: "shop", shop: shop, url: HREF },
+        (resp) => {
+          if (chrome.runtime.lastError) {
+            console.log("[ClipHelper] 发送失败:", chrome.runtime.lastError.message);
+            banner("店名发送失败：" + chrome.runtime.lastError.message, "#f5222d");
+            return;
+          }
+          if (resp && resp.ok) {
+            console.log("[ClipHelper] 已发送店名:", shop, "来源:", source, "端口:", resp.port);
+            banner("已发送店名「" + shop + "」(" + source + "·端口" + resp.port + ")", "#059669");
+          } else {
+            console.log("[ClipHelper] 发送失败：ClipHelper 未运行？");
+            banner("店名发送失败：ClipHelper 未运行？", "#f5222d");
+          }
+        }
+      );
+    } catch (e) {
+      console.log("[ClipHelper] 发送异常:", e);
+      banner("店名发送失败：" + (e && e.message ? e.message : e), "#f5222d");
+    }
   }
 
   // 页面异步渲染：MutationObserver + 快速重试，最长 30 秒，成功后停止

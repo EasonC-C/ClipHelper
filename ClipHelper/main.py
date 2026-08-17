@@ -757,6 +757,7 @@ def _start_shop_server(cache):
                 with cache.lock:
                     cache.shop = shop
                     cache.shop_ready = True
+                _log("shop recv task=%d shop=%s (回传到达)" % (cache.task_id, shop))
                 self._json({"ok": True})
             except Exception:
                 self.send_response(400)
@@ -841,29 +842,24 @@ def _dedicated_browser_pids():
     """扫描进程命令行，返回所有带专用 profile（browser_profile）的进程 PID 集合。
     覆盖"本会话之前就存在的遗留专用浏览器实例"——它们不在 _CH_CPIDS 里，
     隐藏窗口/判断运行状态时会漏掉（Win10 上"藏不掉"就是这类实例的窗口）。
-    结果缓存 3 秒；查询失败返回空集，退回原来的逻辑。"""
+    结果缓存 10 秒（进程扫描很慢，配合 _browser_running 快路径，绝大多数场景
+    不会走到这里）；查询失败返回空集，退回原来的逻辑。"""
     global _PIDSCAN_AT, _PIDSCAN_VAL
     now = time.time()
     with _PIDSCAN_LOCK:
-        if now - _PIDSCAN_AT < 3.0:
+        if now - _PIDSCAN_AT < 10.0:
             return set(_PIDSCAN_VAL)
     try:
         prof = _profile_dir().lower()
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             "Get-CimInstance Win32_Process | Where-Object "
-             "{$_.CommandLine -match 'browser_profile'} | "
-             "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+        import psutil
         pids = set()
-        if out:
-            rows = json.loads(out)
-            if isinstance(rows, dict):
-                rows = [rows]
-            for r in rows:
-                if prof in (r.get("CommandLine") or "").lower():
-                    pids.add(int(r["ProcessId"]))
+        for p in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cl = " ".join(p.info['cmdline'] or [])
+            except Exception:
+                continue
+            if prof in cl.lower():
+                pids.add(p.info['pid'])
     except Exception:
         pids = set()
     with _PIDSCAN_LOCK:
@@ -1181,12 +1177,12 @@ def _activate_extension_window(seconds=5.0):
 
 
 def _browser_running():
-    """专用浏览器是否已在运行。
-    1) 锁文件（SingletonLock/Socket/Cookie）存在即视为运行中；
-    2) 锁文件不可靠（Chrome 版本/冷启动窗口/文件系统差异）时，扫描带专用
-       profile 的真进程兜底——launcher 转发 URL 后即退出，真 PID 从不进
-       _CH_CPIDS，只能靠命令行扫描找到；扫到即登记并视为运行中；
-    3) 最后按"本程序见过的专用浏览器进程是否存活"兜底。
+    """专用浏览器是否已在运行（优先走快路径，避免每次复制都触发慢的进程扫描）。
+    1) 锁文件（SingletonLock/Socket/Cookie）存在即视为运行中——毫秒级；
+    2) "本程序见过的专用浏览器进程"仍存活（_CH_CPIDS + _pid_alive）——毫秒级，
+       覆盖绝大多数场景（预预热/本会话启动的浏览器），无需扫进程；
+    3) 仅以上都不确定时，才扫描带专用 profile 的真进程兜底（慢，~1-2s，自带缓存）——
+       覆盖"本会话之前就存在的遗留专用浏览器实例"，扫到即登记并视为运行中。
     检测不精确只会把热启动误判成冷启动（店名等更久，无害），不会漏判冷启动。"""
     try:
         d = _profile_dir()
@@ -1195,14 +1191,16 @@ def _browser_running():
                 return True
     except Exception:
         pass
-    extra = _dedicated_browser_pids()  # 自带 3 秒缓存，后台线程调用可接受
+    with _CH_CPIDS_LOCK:
+        pids = list(_CH_CPIDS)
+    if any(_pid_alive(p) for p in pids):
+        return True
+    extra = _dedicated_browser_pids()  # 自带缓存，仅快路径均失败时才触发
     if extra:
         for pid in extra:
             _register_browser_pid(pid)
         return True
-    with _CH_CPIDS_LOCK:
-        pids = list(_CH_CPIDS)
-    return any(_pid_alive(p) for p in pids)
+    return False
 
 
 def _open_browser(url, focus=False):
@@ -1285,6 +1283,7 @@ def _wait_shop_then_advance(cache, my_task):
     （只粘贴两次），状态显示"获取失败"，不重试。"""
     with cache.lock:
         cold = cache.shop_cold
+    _wt0 = time.time()
     deadline = time.time() + (SHOP_COLD_TIMEOUT if cold else SHOP_TIMEOUT)
     while time.time() < deadline:
         with cache.lock:
@@ -1296,6 +1295,8 @@ def _wait_shop_then_advance(cache, my_task):
         time.sleep(0.3)
     else:
         # 超时：只完成链接+标题两次粘贴
+        _log("wait_shop 超时 cold=%d 耗时_ms=%d" %
+             (cold, (time.time() - _wt0) * 1000))
         with cache.lock:
             cache.busy = False
             if my_task != cache.task_id or not cache.has_data:
@@ -1305,6 +1306,8 @@ def _wait_shop_then_advance(cache, my_task):
             cache.status_dot = "warn"
             cache.status_text = "获取失败"
         return
+    _log("wait_shop 店名已到 cold=%d 等待耗时_ms=%d" %
+         (cold, (time.time() - _wt0) * 1000))
 
     # 店名已到达：写入剪贴板，等待第3次粘贴
     with cache.lock:
@@ -1640,9 +1643,14 @@ def _rclick_dump(cache):
     time.sleep(0.25)
     with cache.lock:
         seq = cache.rclick_seq
+    _rt0 = time.time()
     deadline = time.time() + 2.0
+    n_loop = 0
     while True:
+        n_loop += 1
+        _ru0 = time.time()
         rect, enabled = _find_paste_rect()
+        _ru1 = time.time()
         with cache.lock:
             if seq != cache.rclick_seq:
                 return  # 期间又发生了新右键：本轮作废，防旧线程用旧矩形误判
@@ -1653,8 +1661,8 @@ def _rclick_dump(cache):
             clicks = list(cache.rclick_clicks)
             judged = cache.rclick_judged
         if rect:
-            _log("rclick menu rect=%s enabled=%d clicks=%d" %
-                 (rect, enabled, len(clicks)))
+            _log("rclick menu rect=%s enabled=%d clicks=%d uia_ms=%d" %
+                 (rect, enabled, len(clicks), (_ru1 - _ru0) * 1000))
             if enabled and not judged:
                 for (x, y) in clicks:
                     if _hit(x, y, rect):
@@ -1662,7 +1670,8 @@ def _rclick_dump(cache):
                         return
             return  # 矩形已拿到：用户还没点的左键由 _on_left_down 判定
         if time.time() > deadline:
-            _log("rclick menu 未找到 clicks=%d" % len(clicks))
+            _log("rclick menu 未找到 clicks=%d loops=%d uia_last_ms=%d total_ms=%d" %
+                 (len(clicks), n_loop, (_ru1 - _ru0) * 1000, (time.time() - _rt0) * 1000))
             return
         time.sleep(0.25)
 
@@ -1804,6 +1813,7 @@ def _clipboard_loop(cache):
 
         try:
             current_text = pyperclip.paste()
+            _detect_t = time.time()   # 检测到剪贴板变化的时刻
         except Exception:
             time.sleep(interval)
             continue
@@ -1842,18 +1852,24 @@ def _clipboard_loop(cache):
                 # 预写链接到剪贴板：第一段粘贴（Ctrl+V 或右键）不再依赖"按下瞬间"那一次写入——
                 # 解析后剪贴板里还是用户复制的完整分享文案（开头即【标题】），
                 # 若首段写入失败/被抢，粘出的就是残留文案。预写后即使写入偶发失败也粘出链接。
+                _t0 = time.time()
                 ok = _write_clipboard(url)
+                _t1 = time.time()
                 with cache.lock:
                     if ok:
                         cache.written = url
-                _log("parse task=%d stage=1 prewrite url ok=%d len=%d" %
-                     (cache.task_id, ok, len(url)))
+                _log("parse task=%d stage=1 prewrite url ok=%d len=%d prewrite_ms=%d 检测到复制到解析耗时_ms=%d" %
+                     (cache.task_id, ok, len(url), ( _t1 - _t0) * 1000,
+                      ( _t0 - _detect_t) * 1000))
                 # 后台打开商品链接：进入专用浏览器，等扩展回传店名。
                 # 专用浏览器不在运行 → 冷启动要等 Chrome 起来+加载扩展+开页回传，
                 # 记录冷启动标记，店名等待给足时间（否则第一次复制必然超时"获取失败"）。
                 with cache.lock:
                     cache.shop_cold = not _browser_running()
+                _t2 = time.time()
                 threading.Thread(target=_open_browser, args=(url,), daemon=True).start()
+                _log("parse task=%d open 已派发 url=%s browser_running=%s" %
+                     (cache.task_id, url, _t2 - _t1))
             else:
                 with cache.lock:
                     cache.has_data = False
