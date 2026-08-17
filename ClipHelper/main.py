@@ -966,6 +966,20 @@ def _is_browser_window(hwnd):
         kernel32.CloseHandle(h)
 
 
+def _window_is_dedicated_browser(hwnd):
+    """判断窗口是否属于『专用浏览器』进程（PID 在 _HIDE_PIDS / _CH_CPIDS 中）。
+    用于区分"用户主动点击专用浏览器查看"vs"粘贴流程自动弹出"。"""
+    if not hwnd:
+        return False
+    user32 = ctypes.windll.user32
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not pid.value:
+        return False
+    with _CH_CPIDS_LOCK:
+        return pid.value in _HIDE_PIDS or pid.value in _CH_CPIDS
+
+
 _BROWSER_PATH = None       # 查找到的浏览器路径缓存
 _BROWSER_SEARCHED = False  # 是否已查找过（含未找到的 None）
 
@@ -1719,8 +1733,20 @@ def _on_right_down(cache, x, y):
 
 
 def _on_left_down(cache, x, y):
-    """右键后的左键点击：记录坐标；『粘贴』矩形已缓存且命中 → 判定右键粘贴。
-    矩形未就绪（菜单还在弹出）时只记录坐标，由 _rclick_dump 完成后复查。"""
+    global _SKIP_RESTORE_UNTIL
+    """左键点击。
+    1) 用户主动点击『专用浏览器』窗口 → 放行查看（30 秒内 hook 不压回，
+       让用户能正常看商品页；复制新任务时清空放行，见 _clipboard_loop）。
+    2) 右键后的左键点击：记录坐标；『粘贴』矩形已缓存且命中 → 判定右键粘贴。"""
+    # 用户主动查看专用浏览器：放行窗口不被压回最小化
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.WindowFromPoint(wintypes.POINT(x, y))
+        if _window_is_dedicated_browser(hwnd):
+            _SKIP_RESTORE_UNTIL = time.time() + 30.0
+            _log("用户点击专用浏览器窗口，放行 30s 不被压回")
+    except Exception:
+        pass
     with cache.lock:
         if (not cache.enabled or not cache.has_data or
                 cache.rclick is None or cache.rclick_judged):
@@ -1780,6 +1806,7 @@ def _mouse_loop(cache):
 # ── 剪贴板轮询 ─────────────────────────────────────────
 
 def _clipboard_loop(cache):
+    global _SKIP_RESTORE_UNTIL
     config = _load_config()
     interval = config.get("poll_interval", 0.1)
     user32 = ctypes.windll.user32  # restype 已在 _init_win32 声明（单例共享）
@@ -1868,6 +1895,8 @@ def _clipboard_loop(cache):
                 # 记录冷启动标记，店名等待给足时间（否则第一次复制必然超时"获取失败"）。
                 with cache.lock:
                     cache.shop_cold = not _browser_running()
+                # 新任务：清空"用户查看专用浏览器"的放行期，恢复防弹屏（避免新窗口弹屏打断粘贴）
+                _SKIP_RESTORE_UNTIL = 0.0
                 _t2 = time.time()
                 threading.Thread(target=_open_browser, args=(url,), daemon=True).start()
                 _log("parse task=%d open 已派发 url=%s browser_running=%s" %
