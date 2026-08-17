@@ -1327,15 +1327,9 @@ def _wait_shop_then_advance(cache, my_task):
             cache.status_text = "剪贴板切换失败"
 
 
-def _on_key_down(cache, force=False):
+def _on_key_down(cache):
     """Ctrl+V 按下瞬间：把本次要粘贴的内容写进剪贴板，放行后目标程序粘贴它。
-    右键粘贴共用本函数：右键按下时同样先把内容写进剪贴板，
-    这样菜单弹出后用户点『粘贴』，目标程序读到的是本段内容。
-
-    force=True（右键场景）：总是写入当前阶段内容，绕过 written 短路。
-    右键按下到用户点菜单『粘贴』间隔数百毫秒，期间剪贴板可能被其他程序改写，
-    若 written==content 短路不写，就会粘出残留内容（与当前阶段对不上）。
-    写同样的内容无害，但能保证粘出的一定是本段内容。"""
+    右键粘贴走独立路径（_confirm_rclick_paste），不经过本函数。"""
     with cache.lock:
         if not cache.enabled or not cache.has_data:
             return
@@ -1349,15 +1343,15 @@ def _on_key_down(cache, force=False):
             content = cache.shop
         else:
             return
-        if not force and cache.written == content:
+        if cache.written == content:
             return  # 剪贴板已是本段内容（推进已预写），避免重复写入
     ok = _write_now(content)
     if ok:
         # 标记为本程序刚写入：剪贴板轮询据此跳过，避免把链接/标题/店名误当成新任务
         with cache.lock:
             cache.written = content
-    _log("keydown force=%d stage=%d ok=%d head=%s" %
-         (force, cache.stage if ok else -1, ok, content[:16]))
+    _log("keydown stage=%d ok=%d head=%s" %
+         (cache.stage if ok else -1, ok, content[:16]))
 
 
 def _advance_after_paste(cache, delay):
@@ -1635,59 +1629,66 @@ def _find_paste_rect():
 
 
 def _rclick_dump(cache):
-    """右键后后台线程：轮询 UIA 找『粘贴』矩形 →
-    若用户在枚举完成前已点过左键（点在矩形内）则判定为右键粘贴。
-    菜单可能延迟弹出（慢应用），或原生菜单需另找 #32768 窗口，
-    故最多轮询 ~2 秒；一旦矩形就绪，之后用户点的左键由 _on_left_down 判定。
-    uiautomation 导入较慢，绝不在鼠标钩子回调线程内调用。"""
-    time.sleep(0.25)
+    """右键后后台线程：延迟等菜单弹出后做单次 UIA 枚举『粘贴』矩形，缓存下来，
+    并复查是否已有左键命中。命中 → 判定右键粘贴。
+    不再像原版那样轮询 2 秒（右键复制会空转）；只枚举一次，找到就缓存，
+    后续用户点的左键由 _on_left_down 用缓存矩形判定。uiautomation 较慢，
+    绝不在鼠标钩子回调线程内调用，故放到这里。"""
+    time.sleep(0.4)  # 等右键菜单弹出（慢应用可略长）
+    _ru0 = time.time()
+    rect, enabled = _find_paste_rect()
+    _ru1 = time.time()
     with cache.lock:
-        seq = cache.rclick_seq
-    _rt0 = time.time()
-    deadline = time.time() + 2.0
-    n_loop = 0
-    while True:
-        n_loop += 1
-        _ru0 = time.time()
-        rect, enabled = _find_paste_rect()
-        _ru1 = time.time()
-        with cache.lock:
-            if seq != cache.rclick_seq:
-                return  # 期间又发生了新右键：本轮作废，防旧线程用旧矩形误判
-            if rect:
-                cache.rclick_rect = rect
-                cache.rclick_rect_enabled = enabled
-                cache.rclick_rect_until = time.time() + 4.0
-            clicks = list(cache.rclick_clicks)
-            judged = cache.rclick_judged
-        if rect:
-            _log("rclick menu rect=%s enabled=%d clicks=%d uia_ms=%d" %
-                 (rect, enabled, len(clicks), (_ru1 - _ru0) * 1000))
-            if enabled and not judged:
-                for (x, y) in clicks:
-                    if _hit(x, y, rect):
-                        _confirm_rclick_paste(cache)
-                        return
-            return  # 矩形已拿到：用户还没点的左键由 _on_left_down 判定
-        if time.time() > deadline:
-            _log("rclick menu 未找到 clicks=%d loops=%d uia_last_ms=%d total_ms=%d" %
-                 (len(clicks), n_loop, (_ru1 - _ru0) * 1000, (time.time() - _rt0) * 1000))
+        if cache.rclick_judged or cache.rclick is None:
             return
-        time.sleep(0.25)
+        if rect:
+            cache.rclick_rect = rect
+            cache.rclick_rect_enabled = enabled
+            cache.rclick_rect_until = time.time() + 2.0
+        clicks = list(cache.rclick_clicks)
+    if rect and enabled:
+        for (x, y) in clicks:
+            if _hit(x, y, rect):
+                _log("rclick menu rect=%s enabled=%d uia_ms=%d 命中" %
+                     (rect, enabled, (_ru1 - _ru0) * 1000))
+                _confirm_rclick_paste(cache, x, y)
+                return
+        _log("rclick menu rect=%s enabled=%d uia_ms=%d 等待左键" %
+             (rect, enabled, (_ru1 - _ru0) * 1000))
+        return
+    _log("rclick menu 未找到 clicks=%d uia_ms=%d" %
+         (len(clicks), (_ru1 - _ru0) * 1000))
 
 
-def _confirm_rclick_paste(cache):
-    """判定『右键粘贴』成功：推进粘贴流程（与 Ctrl+V 的 KeyUp 推进一致）"""
+def _confirm_rclick_paste(cache, click_x, click_y):
+    """判定『右键粘贴』成功：先把当前段写入剪贴板（供目标程序粘贴），再推进。
+    右键不再预写剪贴板（避免右键复制污染剪贴板），所以这里确认点中粘贴菜单后，
+    需要把本段内容写进剪贴板，目标程序点『粘贴』时才能粘出正确内容。"""
     with cache.lock:
         if cache.rclick_judged:
             return
         cache.rclick_judged = True
         cache.rclick_rect = None
         cache.rclick_clicks = []
-        _log("rclick判定 stage=%d" % cache.stage)
+        stage = cache.stage
+        _log("rclick判定 stage=%d 坐标=(%d,%d)" % (stage, click_x, click_y))
         if cache.busy:
             cache.pending_advance = True  # 推进在途：标记补推，不丢状态
             return
+        # 取当前段内容：右键粘贴要粘的就是这一段
+        if stage == 1:
+            content = cache.url
+        elif stage == 2:
+            content = cache.title
+        elif stage == 3:
+            if not cache.shop_ready:
+                cache.rclick_judged = False
+                return  # 店名未就绪不写，等重试
+            content = cache.shop
+        else:
+            return
+    if content:
+        _write_clipboard(content)
     # 右键点『粘贴』后目标程序读剪贴板可能稍慢（微信/抖音等常见），
     # 延时再写下一段，避免粘的瞬间剪贴板已被换成下一段内容。
     # 延时 0.3s：Ctrl+V 路径 KeyUp 后 0.05s 即推进且从未粘错，说明目标读得快；
@@ -1697,13 +1698,14 @@ def _confirm_rclick_paste(cache):
 
 
 def _on_right_down(cache, x, y):
-    """右键按下：把本段内容写进剪贴板（菜单弹出时即就绪），并启动 UIA 识别。
+    """右键按下：只记录状态，不写剪贴板（避免右键复制污染剪贴板），
+    延迟启动 _rclick_dump 做单次 UIA 枚举缓存『粘贴』矩形。
+    命中『粘贴』菜单项才判定+写（见 _on_left_down / _confirm_rclick_paste）。
     仅任务进行中生效，日常右键不受影响。"""
     with cache.lock:
         if (not cache.enabled or not cache.has_data or
                 cache.stage not in (1, 2, 3)):
             return
-    _on_key_down(cache, force=True)  # 写剪贴板：右键总是强制写本段内容（防粘出残留）
     with cache.lock:
         cache.rclick = (x, y)
         cache.rclick_stage = cache.stage
@@ -1717,8 +1719,8 @@ def _on_right_down(cache, x, y):
 
 
 def _on_left_down(cache, x, y):
-    """左键按下：记录点击坐标；『粘贴』矩形已就绪且命中 → 判定右键粘贴。
-    矩形未就绪时先入队，由 _rclick_dump 完成后复查。"""
+    """右键后的左键点击：记录坐标；『粘贴』矩形已缓存且命中 → 判定右键粘贴。
+    矩形未就绪（菜单还在弹出）时只记录坐标，由 _rclick_dump 完成后复查。"""
     with cache.lock:
         if (not cache.enabled or not cache.has_data or
                 cache.rclick is None or cache.rclick_judged):
@@ -1730,7 +1732,7 @@ def _on_left_down(cache, x, y):
         stage = cache.stage
     if rect and enabled and time.time() <= until and stage == cache.rclick_stage:
         if _hit(x, y, rect):
-            _confirm_rclick_paste(cache)
+            _confirm_rclick_paste(cache, x, y)
 
 
 def _mouse_loop(cache):
